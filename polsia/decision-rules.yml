@@ -1,0 +1,270 @@
+# POLSIA-OMEGA Decision Rules
+
+# Map event types to agents, auto-execution rules, and escalation thresholds
+
+decision_rules:
+  git.deploy.fail:
+    agent: cto-engineering
+    severity: High
+    auto_execute: true
+    goal_template: |
+      Deployment to production failed.
+      Diagnose from CI logs: what broke?
+      Check: test output, error messages, recent commits.
+      Action: recommend rollback or a fix PR.
+      Company: {company}
+    requires_approval:
+      - if: error affects customer-facing code
+      - if: requires database migration or rollback
+      - if: conflicts with in-flight PR
+    escalation_level: High
+    notify:
+      - founder
+      - ops
+
+  git.security.alert:
+    agent: ops-reliability
+    severity: High
+    auto_execute: false
+    goal_template: |
+      Security alert from GitHub Advanced Security.
+      Alert: {alert_type}
+      Severity: {alert_severity}
+      File: {file_path}
+      Issue: Analyze and recommend remediation.
+      Company: {company}
+    escalation_level: High
+    notify:
+      - founder
+      - ops
+      - legal-compliance
+
+  ops.alert.p1:
+    agent: ops-reliability
+    severity: Critical
+    auto_execute: true
+    goal_template: |
+      CRITICAL alert firing in production.
+      Metric: {metric_name}
+      Threshold: {threshold}
+      Current value: {current_value}
+      Company: {company}
+      Action: Assess customer impact. Start mitigation.
+      Page on-call engineer if needed.
+    requires_approval:
+      - if: recommends taking service offline
+      - if: recommends data deletion
+    escalation_level: Critical
+    notify:
+      - founder
+      - ops
+      - customer_success
+
+  ops.alert.p2:
+    agent: ops-reliability
+    severity: Medium
+    auto_execute: true
+    goal_template: |
+      WARNING-level alert triggered.
+      Metric: {metric_name}
+      Current value: {current_value}
+      Company: {company}
+      Action: Log issue, add to runbook, monitor.
+    escalation_level: Medium
+    notify:
+      - ops
+
+  metric.breach:
+    agent: cfo-finance
+    severity: High
+    auto_execute: false
+    goal_template: |
+      Key metric has breached threshold.
+      Metric: {metric_name}
+      Current: {current_value}
+      Target: {target_value}
+      Change: {percent_change}%
+      Company: {company}
+      Action: Root cause analysis. What changed?
+      Recommend levers to pull.
+    escalation_level: High
+    thresholds:
+      - metric: conversion_rate
+        threshold: -10%  # if drop > 10%, auto escalate
+      - metric: mrr
+        threshold: -5%
+      - metric: churn_rate
+        threshold: +50%  # if increase > 50%, auto escalate
+    notify:
+      - founder
+      - cfo
+
+  sales.churn:
+    agent: cmo-growth
+    severity: High
+    auto_execute: true
+    goal_template: |
+      Customer subscription canceled.
+      Customer ID: {customer_id}
+      MRR impact: ${mrr_impact}
+      Churn cohort: {cohort}
+      Company: {company}
+      Action: Analyze why (last login, support tickets, feature usage).
+      If applicable, design win-back campaign.
+    requires_approval:
+      - if: mrr_impact > 5000  # high-value customer
+      - if: customer is enterprise
+    escalation_level: High
+    notify:
+      - founder
+      - cmo
+      - sales
+
+  sales.new_revenue:
+    agent: cfo-finance
+    severity: Info
+    auto_execute: true
+    goal_template: |
+      New subscription or charge succeeded.
+      Amount: ${amount}
+      Customer: {customer_id}
+      Type: {revenue_type}
+      Company: {company}
+      Action: Log revenue, update forecast.
+    escalation_level: Info
+    notify: []  # silent, just log
+
+  support.spike:
+    agent: support
+    severity: Medium
+    auto_execute: false
+    goal_template: |
+      Support queue has spiked.
+      Tickets in queue: {queue_length}
+      Avg response time: {avg_response_time}
+      Top issues: {top_issues}
+      Company: {company}
+      Action: Triage and categorize. Design response.
+      Consider: is this a product issue or user onboarding?
+    escalation_level: Medium
+    notify:
+      - founder
+      - support
+      - cpo
+
+  product.feedback:
+    agent: cpo-product
+    severity: Medium
+    auto_execute: false
+    goal_template: |
+      Customer feedback or feature request received.
+      Source: {source}
+      Theme: {theme}
+      Frequency: {frequency_in_period}
+      Company: {company}
+      Action: Assess priority. Add to roadmap.
+      Recommend: build, defer, or decline.
+    escalation_level: Medium
+    notify:
+      - cpo
+
+  milestone.deadline:
+    agent: ceo-strategy
+    severity: High
+    auto_execute: false
+    goal_template: |
+      Milestone deadline has arrived.
+      Milestone: {milestone_name}
+      Planned ship date: {planned_date}
+      Today's date: {today}
+      Status: {current_status}
+      Company: {company}
+      Action: Assess status vs. plan.
+      Adjust timeline, scope, or resources as needed.
+    escalation_level: High
+    notify:
+      - founder
+      - ceo
+      - relevant_agent
+
+  approval.pending:
+    agent: relevant_agent  # determined by approval context
+    severity: Medium
+    auto_execute: false
+    goal_template: |
+      Pending approval is ready for decision.
+      Approval ID: {approval_id}
+      Proposed action: {proposed_action}
+      Context: {context}
+      Company: {company}
+      Decision options:
+        - APPROVED: execute {approval_action}
+        - REJECTED: cancel and log reason
+        - NEEDS_REVISION: suggest changes
+    escalation_level: Medium
+    notify:
+      - founder
+      - relevant_agent
+
+# Global execution rules
+global:
+  deduplication_window: 5m  # don't fire same event twice in 5 min
+  max_concurrent_sessions: 3  # limit parallel Claude invocations
+  session_timeout: 10m  # if session takes > 10 min, escalate
+  retry_on_failure:
+    max_attempts: 2
+    backoff: exponential  # 30s, 90s
+  escalation_defaults:
+    - if: no founder_approval after 24h, repeat notification
+    - if: session fails, escalate with error context
+    - if: decision conflicts with existing roadmap, flag for review
+
+# Notification channels (configure per environment)
+notifications:
+  founder:
+    - method: slack
+      channel: "#polsia-alerts"
+      urgency: immediate
+    - method: email
+      recipient: revolutionbytes@gmail.com
+      urgency: immediate
+
+  ops:
+    - method: slack
+      channel: "#ops-alerts"
+      urgency: immediate
+
+  ceo:
+    - method: slack
+      channel: "#strategy"
+      urgency: daily-digest
+
+  cpo:
+    - method: slack
+      channel: "#product"
+      urgency: daily-digest
+
+  cmo:
+    - method: slack
+      channel: "#growth"
+      urgency: daily-digest
+
+  sales:
+    - method: slack
+      channel: "#sales"
+      urgency: immediate
+
+  support:
+    - method: slack
+      channel: "#support"
+      urgency: immediate
+
+  legal-compliance:
+    - method: email
+      recipient: legal@revolution-bytes.com
+      urgency: immediate
+
+  customer_success:
+    - method: slack
+      channel: "#customer-success"
+      urgency: immediate

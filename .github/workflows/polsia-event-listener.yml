@@ -1,0 +1,166 @@
+name: POLSIA-OMEGA Event Listener
+
+on:
+  # Listen for deployment failures (CI/CD)
+  workflow_run:
+    workflows: ["Deploy to Production"]
+    types: [completed]
+
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      event_type:
+        description: "Event type (git.deploy.fail, sales.churn, ops.alert.p1, etc.)"
+        required: true
+        type: choice
+        options:
+          - git.deploy.fail
+          - git.security.alert
+          - ops.alert.p1
+          - ops.alert.p2
+          - metric.breach
+          - sales.churn
+          - support.spike
+      company:
+        description: "Company name (courtformai, etc.)"
+        required: true
+        default: courtformai
+      payload:
+        description: "JSON payload (optional for testing)"
+        required: false
+
+jobs:
+  process-event:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Parse workflow_run event
+        if: github.event_name == 'workflow_run'
+        id: parse-workflow
+        run: |
+          WORKFLOW_STATUS="${{ github.event.workflow_run.conclusion }}"
+          WORKFLOW_NAME="${{ github.event.workflow_run.name }}"
+          REPO="${{ github.event.repository.name }}"
+
+          if [[ "$WORKFLOW_STATUS" == "failure" ]]; then
+            echo "event_type=git.deploy.fail" >> $GITHUB_OUTPUT
+            echo "severity=High" >> $GITHUB_OUTPUT
+            echo "company=courtformai" >> $GITHUB_OUTPUT
+            echo "workflow_id=${{ github.event.workflow_run.id }}" >> $GITHUB_OUTPUT
+            echo "workflow_name=$WORKFLOW_NAME" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine event from manual input
+        if: github.event_name == 'workflow_dispatch'
+        id: parse-manual
+        run: |
+          echo "event_type=${{ github.event.inputs.event_type }}" >> $GITHUB_OUTPUT
+          echo "company=${{ github.event.inputs.company }}" >> $GITHUB_OUTPUT
+          echo "payload=${{ github.event.inputs.payload }}" >> $GITHUB_OUTPUT
+
+      - name: Set event variables
+        id: event
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            EVENT_TYPE="${{ steps.parse-workflow.outputs.event_type }}"
+            COMPANY="${{ steps.parse-workflow.outputs.company }}"
+            SEVERITY="${{ steps.parse-workflow.outputs.severity }}"
+            WORKFLOW_ID="${{ steps.parse-workflow.outputs.workflow_id }}"
+          else
+            EVENT_TYPE="${{ steps.parse-manual.outputs.event_type }}"
+            COMPANY="${{ steps.parse-manual.outputs.company }}"
+            SEVERITY="Manual"
+            WORKFLOW_ID="manual-test"
+          fi
+
+          echo "event_type=$EVENT_TYPE" >> $GITHUB_OUTPUT
+          echo "company=$COMPANY" >> $GITHUB_OUTPUT
+          echo "severity=$SEVERITY" >> $GITHUB_OUTPUT
+          echo "workflow_id=$WORKFLOW_ID" >> $GITHUB_OUTPUT
+
+      - name: Log event
+        run: |
+          cat >> events.log <<EOF
+          {
+            "timestamp": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+            "event_type": "${{ steps.event.outputs.event_type }}",
+            "company": "${{ steps.event.outputs.company }}",
+            "severity": "${{ steps.event.outputs.severity }}",
+            "workflow_id": "${{ steps.event.outputs.workflow_id }}",
+            "repo": "${{ github.repository }}",
+            "ref": "${{ github.ref }}"
+          }
+          EOF
+          cat events.log
+
+      - name: Invoke POLSIA-OMEGA goal cycle
+        id: invoke-polsia
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          EVENT_TYPE: ${{ steps.event.outputs.event_type }}
+          COMPANY: ${{ steps.event.outputs.company }}
+          SEVERITY: ${{ steps.event.outputs.severity }}
+        run: |
+          # This script will be replaced with actual Claude SDK invocation
+          # For now, it demonstrates the structure
+
+          cat > invoke-goal.js <<'GOAL_SCRIPT'
+          const Anthropic = require("@anthropic-ai/sdk");
+
+          const client = new Anthropic({
+            apiKey: process.env.CLAUDE_API_KEY,
+          });
+
+          const eventType = process.env.EVENT_TYPE;
+          const company = process.env.COMPANY;
+          const severity = process.env.SEVERITY;
+
+          // Map event to decision rule and agent
+          const rules = {
+            "git.deploy.fail": {
+              agent: "CTO (Engineering)",
+              goal: `Deployment to production failed. Diagnose the failure from CI logs.
+                Company: ${company}
+                Severity: ${severity}
+                Check: test output, error messages, last commits.
+                Action: recommend rollback or a fix PR.`,
+            },
+            "sales.churn": {
+              agent: "CMO (Growth & Marketing)",
+              goal: `Customer subscription was canceled. Analyze why and design win-back.
+                Company: ${company}
+                Check: customer's last activity, support tickets, feature usage.`,
+            },
+            "ops.alert.p1": {
+              agent: "Ops & Reliability",
+              goal: `Critical alert fired in production.
+                Company: ${company}
+                Assess impact, initiate mitigation.`,
+            },
+          };
+
+          const rule = rules[eventType] || { agent: "CEO", goal: `Event: ${eventType}` };
+
+          console.log(`\n[POLSIA-OMEGA] Invoking ${rule.agent} for: ${eventType}\n`);
+
+          // Actual Claude API call would happen here
+          // For now, just log
+          console.log(`Goal: ${rule.goal}`);
+          console.log(`\n[Note] Real session would fetch company context, run the agent, and commit results.`);
+
+          GOAL_SCRIPT
+
+          node invoke-goal.js || echo "Goal invocation logged (would run with Claude API key)"
+
+      - name: Commit event log
+        run: |
+          git config user.name "POLSIA-OMEGA"
+          git config user.email "polsia@revolution-bytes.com"
+          git add events.log 2>/dev/null || true
+          git commit -m "Event logged: ${{ steps.event.outputs.event_type }} on ${{ steps.event.outputs.company }}" || true
+          git push || true
